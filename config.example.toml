@@ -1,0 +1,32 @@
+[render]
+font_path   = "./dosfont.ttf"
+font_size   = 14
+font_width  = 8
+background  = "black"
+foreground  = "white"
+
+[twitter]
+consumer_key        = ""
+consumer_secret     = ""
+access_token        = ""
+access_token_secret = ""
+
+[ntfy]
+enabled = true
+public_topic = ""
+server  = ""
+topic   = ""
+token   = ""
+
+[discord]
+enabled = true
+webhook = ""
+
+[zipline]
+url     = ""
+token   = ""
+
+[mongo]
+enabled     = true
+url         = ""
+collection  = ""
