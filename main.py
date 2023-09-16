@@ -445,7 +445,7 @@ def main_loop():
         releases = find_new_releases(releases)
         handle_releases(releases)
         time.sleep(ONE_MINUTE)
-        break
+
 
 if __name__ == "__main__":
     main_loop()
