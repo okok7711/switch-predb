@@ -22,7 +22,7 @@ config = toml.load("config.toml")
 
 OLD_HASH_SET = set()
 
-DEBUG = config["debug"]
+DEBUG = config["common"]["debug"]
 NEWLINE = "\n"
 TITLE_ID_BASE_MASK = 0xFFFFFFFFFFFFE000
 TITLE_ID_REGEX = re.compile(r"01[A-Fa-f0-9]+")
