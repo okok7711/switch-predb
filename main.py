@@ -25,7 +25,7 @@ OLD_HASH_SET = set()
 DEBUG = config["common"]["debug"]
 NEWLINE = "\n"
 TITLE_ID_BASE_MASK = 0xFFFFFFFFFFFFE000
-TITLE_ID_REGEX = re.compile(r"01[A-Fa-f0-9]+")
+TITLE_ID_REGEX = re.compile(r"01[A-Fa-f0-9]{12,}")
 ONE_MINUTE = 60
 ONE_HOUR = 60 * ONE_MINUTE
 CACHE = {
@@ -271,7 +271,7 @@ def render_nfo(release_info):
     for line in nfo_lines:
         nfo_draw.text(
             (0, current_offset),
-            line.strip(),
+            line,
             font=nfo_font,
             fill=config["render"]["foreground"]
         )
@@ -316,7 +316,7 @@ View on eShop: https://ec.nintendo.com/apps/{release_info["tid"]}/US
     
     return {
         "text": post,
-        "media": {"media_ids": [str(image["media_id"]) for image in release_info["media"]]}
+        **({"media": {"media_ids": [str(image["media_id"]) for image in release_info["media"]]}} if release_info["media"] else {})
     }
 
 
