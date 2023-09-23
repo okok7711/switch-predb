@@ -1,17 +1,18 @@
+import json
 import re
 import time
 import traceback
 from datetime import datetime
 from hashlib import md5
 from io import BytesIO
-import json
 from logging import getLogger
+from typing import Any, Generator, List, Tuple
 
 import coloredlogs
-from oauthlib import oauth1
 import pymongo
 import requests
 import toml
+from oauthlib import oauth1
 from PIL import Image, ImageDraw, ImageFont
 
 coloredlogs.install()
@@ -22,8 +23,8 @@ config = toml.load("config.toml")
 
 if config["render"]["renderer"] == "pyansi":
     from tempfile import NamedTemporaryFile
-    from pyansilove.pyansilove import Path
-    from pyansilove.pyansilove import AnsiLove
+
+    from pyansilove.pyansilove import AnsiLove, Path
     from pyansilove.schemas import AnsiLoveOptions
 
 
@@ -64,7 +65,7 @@ mongo_client = pymongo.MongoClient(
 )[config["mongo"]["collection"]]
 
 
-def format_exception(exception):
+def format_exception(exception: Exception) -> str:
     return ''.join(traceback.format_exception(None, exception, exception.__traceback__))
 
 
@@ -120,11 +121,19 @@ def log(level: str, message: str, *, silent: bool = False, publish: bool = False
         log_ntfy(message, publish)
 
 
-def request_url(url, caller_name, method="get", default=None, apply=None, apply_kwargs={}, **kwargs):
+def request_url(
+        url: str,
+        caller_name: str,
+        method: str ="get",
+        default: Any = None,
+        apply: str = None,
+        apply_kwargs: dict = {},
+        **kwargs
+    ):
     if DEBUG:
         log("info", f"[REQ][{caller_name}] Reaching {url}, method: {method}, apply: {apply}, apply_kwargs: {apply_kwargs}, kwargs: {kwargs}")
     try:
-        response = getattr(requests, method)(url, timeout=10, **kwargs)
+        response: requests.Response = getattr(requests, method)(url, timeout=10, **kwargs)
 
     except requests.RequestException as exception:
         log("error", f"[REQ][{caller_name}] Reaching {url} failed: ```{format_exception(exception)}```")
@@ -137,11 +146,11 @@ def request_url(url, caller_name, method="get", default=None, apply=None, apply_
     return getattr(response, apply)(**apply_kwargs) if apply else response
 
 
-def scan_srrdb():
+def scan_srrdb() -> dict:
     return request_url(SRRDB_SCAN_URL, "SCN", apply="json")["results"]
 
 
-def find_new_releases(releases):
+def find_new_releases(releases: List[dict]) -> Generator[dict]:
     initial = not OLD_HASH_SET and not DEBUG
     
     for release in releases:
@@ -159,22 +168,22 @@ def find_new_releases(releases):
         yield release
 
 
-def get_details(release):
-    if release in CACHE["releases"]:
-        return CACHE["releases"][release]
+def get_details(release_name: str) -> dict:
+    if release_name in CACHE["releases"]:
+        return CACHE["releases"][release_name]
     
-    details = request_url(SRRDB_RELEASE_URL.format(release_name=release), "DET", apply="json")
-    CACHE["releases"][release] = details
+    details = request_url(SRRDB_RELEASE_URL.format(release_name=release_name), "DET", apply="json")
+    CACHE["releases"][release_name] = details
     return details
+ 
 
-
-def mask_title_id(title_id):
+def mask_title_id(title_id: str) -> str:
     return "0" + hex(
         int(title_id, 16) & TITLE_ID_BASE_MASK
     )[2:].upper()
 
 
-def parse_nfo(nfo_url):
+def parse_nfo(nfo_url: str) -> Tuple[str, str]:
     log("info", f"[NFO] Parsing {nfo_url}")
     nfo = request_url(nfo_url, "NFO").content.decode("cp437")
     
@@ -196,7 +205,7 @@ def parse_nfo(nfo_url):
     return title_id, masked_title_id
 
 
-def humansize(size):
+def humansize(size: int) -> str:
     suffixes = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
     index = 0
 
@@ -209,8 +218,8 @@ def humansize(size):
     return '%s %s' % (size, suffixes[index])
 
 
-def get_info(release):
-    details = get_details(release)
+def get_info(release_name: str) -> dict:
+    details = get_details(release_name)
 
     if not details:
         return
@@ -219,9 +228,9 @@ def get_info(release):
     files = details["files"]
 
     if "Proof" in files[1]["name"]:
-        proof_url = SRRDB_FILE_URL.format(release_name=release, file_name=files[1]["name"])
+        proof_url = SRRDB_FILE_URL.format(release_name=release_name, file_name=files[1]["name"])
 
-    nfo_url = SRRDB_FILE_URL.format(release_name=release, file_name=files[0]["name"])
+    nfo_url = SRRDB_FILE_URL.format(release_name=release_name, file_name=files[0]["name"])
 
     parse_result = parse_nfo(nfo_url)
 
@@ -236,7 +245,7 @@ def get_info(release):
     return {
         "tid": title_id,
         "masked_tid": masked_title_id,
-        "title": release,
+        "title": release_name,
         "size": size,
         "crc": crc,
         "proof": proof_url,
@@ -245,12 +254,12 @@ def get_info(release):
     }
 
 
-def add_to_mongo(release_info):
+def add_to_mongo(release_info: dict):
     log("info", f"[MDB] Adding {release_info['title']} to MongoDB")
     mongo_client.releases.insert_one(release_info)
 
 
-def render_nfo(release_info):
+def render_nfo(release_info: dict) -> Image.Image:
     log("info", f"[NFO] Rendering {release_info['title']} NFO with custom renderer")
 
     nfo_font = ImageFont.truetype(
@@ -287,7 +296,7 @@ def render_nfo(release_info):
     return rendered_nfo
 
 
-def render_nfo_pyansi(release_info):
+def render_nfo_pyansi(release_info: dict) -> Image.Image:
     log("info", f"[NFO] Rendering {release_info['title']} NFO with pyansi")
     with (
         NamedTemporaryFile(mode="w", suffix=".nfo") as nfo_file,
@@ -310,7 +319,7 @@ def render_nfo_pyansi(release_info):
     return rendered_nfo
 
 
-def upload_nfo(release_info, buffer, mode):
+def upload_nfo(release_info: dict, buffer: BytesIO, mode: str) -> str:
     log("info", f"[RNR] Uploading rendered NFO {release_info['title']}")
 
     response = request_url(
@@ -334,7 +343,7 @@ def upload_nfo(release_info, buffer, mode):
     return url
 
 
-def make_twitter_post(release_info):
+def make_twitter_post(release_info: dict) -> dict:
     title = release_info["title"]
     post = f"""
 New Release by {title[title.rfind('-')+1:]}!
@@ -352,7 +361,7 @@ View on eShop: https://ec.nintendo.com/apps/{release_info["tid"]}/US
     }
 
 
-def generate_oauth_headers(sign_headers, url, content = None, multipart: bool = False):
+def generate_oauth_headers(sign_headers: dict, url: str, content: dict = None, multipart: bool = False) -> dict:
     ouath_client = oauth1.Client(
         client_key              = config["twitter"]["consumer_key"],
         client_secret           = config["twitter"]["consumer_secret"],
@@ -372,7 +381,7 @@ def generate_oauth_headers(sign_headers, url, content = None, multipart: bool = 
     return headers | sign_headers
 
 
-def do_twitter_request(url, sign_headers, caller_name, multipart: bool = False,  **kwargs):
+def do_twitter_request(url: str, sign_headers: dict, caller_name: str, multipart: bool = False,  **kwargs) -> dict:
     return request_url(
         url,
         caller_name,
@@ -388,21 +397,22 @@ def do_twitter_request(url, sign_headers, caller_name, multipart: bool = False, 
     )
 
 
-def upload_media(release_info):
+def upload_media(release_info: dict):
     log("info", f"[UMD] Uploading media for {release_info['title']}")
 
     release_info["media"] = []
 
-    for image in ["thumb", "nfo", "proof"]:
-        if not release_info[image]:
+    for image_type in ["thumb", "nfo", "proof"]:
+        if not release_info[image_type]:
             continue
-        log("info", f"[UMD] Uploading {image} media for {release_info['title']}: {release_info[image]}")
+
+        log("info", f"[UMD] Uploading {image_type} media for {release_info['title']}: {release_info[image_type]}")
 
         media_info = {
-            "url": release_info[image],
+            "url": release_info[image_type],
         }
 
-        image_content = request_url(release_info[image], "UMD")
+        image_content = request_url(release_info[image_type], "UMD")
 
         if not image_content:
             continue
@@ -415,7 +425,7 @@ def upload_media(release_info):
                 {},
                 caller_name = "UMD",
                 files = {
-                    "media": (f"{image}_{release_info['tid']}.jpg", io)
+                    "media": (f"{image_type}_{release_info['tid']}.jpg", io)
                 }
             )
 
@@ -425,7 +435,7 @@ def upload_media(release_info):
         release_info["media"].append(media_info | response)
 
 
-def post_to_twitter(release_info):
+def post_to_twitter(release_info: dict) -> dict:
     log("info", f"[TWT] Posting to Twitter")
 
     upload_media(release_info)
@@ -439,7 +449,7 @@ def post_to_twitter(release_info):
     )
 
 
-def handle_releases(releases):
+def handle_releases(releases: List[dict]) -> None:
     for release in releases:
         release_name = release["release"]
         log("info", f"[REL] Found new release: {release_name}", publish=True)
