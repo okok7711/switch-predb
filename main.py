@@ -98,7 +98,7 @@ def log_ntfy(message: str, public: bool = False):
             "Authorization": f"Bearer {config['ntfy']['token']}",
             "Markdown": "yes",
             "Title": "New Logging Message",
-            "Tags": repr(re.match("\[([A-Z]+)\]", message)),
+            "Tags": ", ".join(re.match("^\[([A-Z]+)\]", message).groups()),
         },
         json = message,
         timeout=10
@@ -441,12 +441,13 @@ def post_to_twitter(release_info: dict) -> dict:
     upload_media(release_info)
     content = make_twitter_post(release_info)
 
-    return do_twitter_request(
+    do_twitter_request(
         POST_TWEET_URL,
         {"Content-Type": "application/json"},
         caller_name = "TWT",
         data = json.dumps(content)
     )
+    return content
 
 
 def handle_releases(releases: List[dict]) -> None:
