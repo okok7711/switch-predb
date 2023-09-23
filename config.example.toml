@@ -1,9 +1,13 @@
+[common]
+debug = false
+
 [render]
 font_path   = "./dosfont.ttf"
 font_size   = 14
 font_width  = 8
 background  = "black"
 foreground  = "white"
+renderer    = "pyansi"
 
 [twitter]
 consumer_key        = ""

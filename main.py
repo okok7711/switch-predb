@@ -20,6 +20,13 @@ logger = getLogger("switch-predb")
 config = toml.load("config.toml")
 
 
+if config["render"]["renderer"] == "pyansi":
+    from tempfile import NamedTemporaryFile
+    from pyansilove.pyansilove import Path
+    from pyansilove.pyansilove import AnsiLove
+    from pyansilove.schemas import AnsiLoveOptions
+
+
 OLD_HASH_SET = set()
 
 DEBUG = config["common"]["debug"]
@@ -244,7 +251,7 @@ def add_to_mongo(release_info):
 
 
 def render_nfo(release_info):
-    log("info", f"[NFO] Rendering {release_info['title']} NFO")
+    log("info", f"[NFO] Rendering {release_info['title']} NFO with custom renderer")
 
     nfo_font = ImageFont.truetype(
         config["render"]["font_path"],
@@ -280,7 +287,30 @@ def render_nfo(release_info):
     return rendered_nfo
 
 
-def upload_nfo(release_info, buffer):
+def render_nfo_pyansi(release_info):
+    log("info", f"[NFO] Rendering {release_info['title']} NFO with pyansi")
+    with (
+        NamedTemporaryFile(mode="w", suffix=".nfo") as nfo_file,
+        NamedTemporaryFile(mode="w", suffix=".png") as image_file
+    ):
+        nfo_file.write(CACHE["nfos"][release_info["tid"]])
+        nfo_file.flush()
+
+        AnsiLove.ansi(
+            input_path=Path(nfo_file.name),
+            output_path=Path(image_file.name),
+            options=AnsiLoveOptions(
+                truecolor=True
+            )
+        )
+
+        rendered_nfo = Image.open(image_file.name)
+        rendered_nfo.load()
+    
+    return rendered_nfo
+
+
+def upload_nfo(release_info, buffer, mode):
     log("info", f"[RNR] Uploading rendered NFO {release_info['title']}")
 
     response = request_url(
@@ -288,8 +318,10 @@ def upload_nfo(release_info, buffer):
         "RNR",
         method="post",
         apply="json", 
-        files={"file": (f'{release_info["title"]}.jpg', buffer, "image/jpeg")},
-        headers={"Authorization": config["zipline"]["token"]}
+        files={"file": (f'{release_info["title"]}.{mode}', buffer, f"image/{mode}")},
+        headers={"Authorization": config["zipline"]["token"],
+                 "Image-Compression-Percent": "0",
+                 "Format": "NAME"}
     )
 
     if not response:
@@ -422,13 +454,27 @@ def handle_releases(releases):
             continue
 
         with BytesIO() as buffer:
-            render_nfo(release_info).save(buffer, format="JPEG")
+            if config["render"]["renderer"] == "pyansi":
+                mode = "png"
+                render_nfo_pyansi(release_info).save(buffer, format=mode)
+
+            elif config["render"]["renderer"] == "builtin":
+                mode = "jpeg"
+                render_nfo(release_info).save(buffer, format=mode)
+
+            else:
+                raise ValueError(f"Unknown renderer {config['render']['renderer']}")
+
             buffer.seek(0)
-            if not upload_nfo(release_info, buffer):
+
+            if not upload_nfo(release_info, buffer, mode):
                 continue
         
         if config["mongo"]["enabled"]:
             add_to_mongo(release_info)
+        
+        if config["common"]["debug"]:
+            return
         
         post = post_to_twitter(release_info)
 
@@ -445,6 +491,9 @@ def main_loop():
         releases = find_new_releases(releases)
         handle_releases(releases)
         time.sleep(ONE_MINUTE)
+
+        if config["common"]["debug"]:
+            return
 
 
 if __name__ == "__main__":
