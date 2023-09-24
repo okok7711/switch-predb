@@ -47,18 +47,15 @@ COLORS = {
         "critical": 0xff0000
     }
 
-
-NTFY_URL = f"{config['ntfy']['server']}/{config['ntfy']['topic']}"
-PUBLIC_NTFY_URL = NTFY_URL if DEBUG else f"https://ntfy.sh/{config['ntfy']['public_topic']}"
-
 SRRDB_SCAN_URL = "https://api.srrdb.com/v1/search/category:nsw/order:date-desc"
 SRRDB_RELEASE_URL = "https://api.srrdb.com/v1/details/{release_name}"
 SRRDB_FILE_URL = "https://www.srrdb.com/download/file/{release_name}/{file_name}"
 TINFOIL_URL = "https://tinfoil.media/ti/{title_id}/1024/1024/"
 
+TWITTER_BASE_URL = "https://twitter.com"
 TWITTER_MEDIA_ENDPOINT_URL = 'https://upload.twitter.com/1.1/media/upload.json'
-
 POST_TWEET_URL = 'https://api.twitter.com/2/tweets'
+
 
 mongo_client = pymongo.MongoClient(
     host=config["mongo"]["url"],
@@ -91,21 +88,32 @@ def log_discord(level: str, message: str):
     )
 
 
-def log_ntfy(message: str, public: bool = False):
-    requests.post(
-        NTFY_URL if not public else PUBLIC_NTFY_URL,
+def create_ntfy_action(label: str, url: str) -> dict:
+    return {
+        "action": "view",
+        "label": label,
+        "url": url
+    }
+
+
+def log_ntfy(message: str, public: bool = False, actions: list = []):
+     requests.post(
+        config["ntfy"]["server"],
         headers={
             "Authorization": f"Bearer {config['ntfy']['token']}",
-            "Markdown": "yes",
-            "Title": "New Logging Message",
-            "Tags": ", ".join(re.match("^\[([A-Z]+)\]", message).groups()),
         },
-        json = message,
+        data = json.dumps({
+            "topic": config["ntfy"]["topic"] if not public else config["ntfy"]["public_topic"],
+            "message": message,
+            "title": "New Logging Message",
+            "markdown": True,
+            "actions": actions
+        }),
         timeout=10
     )
 
 
-def log(level: str, message: str, *, silent: bool = False, publish: bool = False):
+def log(level: str, message: str, *, silent: bool = False, publish: bool = False, ntfy_actions: list = []):
     getattr(logger, level)(message)
 
     if silent:
@@ -115,10 +123,10 @@ def log(level: str, message: str, *, silent: bool = False, publish: bool = False
         log_discord(level, message)
 
     if config["ntfy"]["enabled"]:
-        log_ntfy(message)
+        log_ntfy(message, actions=ntfy_actions)
 
     if publish and config["ntfy"]["enabled"]:
-        log_ntfy(message, publish)
+        log_ntfy(message, publish, actions=ntfy_actions)
 
 
 def request_url(
@@ -150,7 +158,7 @@ def scan_srrdb() -> dict:
     return request_url(SRRDB_SCAN_URL, "SCN", apply="json")["results"]
 
 
-def find_new_releases(releases: List[dict]) -> Generator[dict]:
+def find_new_releases(releases: List[dict]) -> Generator[dict, None, None]:
     initial = not OLD_HASH_SET and not DEBUG
     
     for release in releases:
@@ -351,8 +359,8 @@ New Release by {title[title.rfind('-')+1:]}!
 {title} [{release_info["tid"]}][{release_info["crc"]}]
 Size: {release_info["size"]}
 
-View on Tinfoil: https://tinfoil.io/Title/{release_info["tid"]}
-View on eShop: https://ec.nintendo.com/apps/{release_info["tid"]}/US
+View on Tinfoil: https://tinfoil.io/Title/{release_info["masked_tid"]}
+View on eShop: https://ec.nintendo.com/apps/{release_info["masked_tid"]}/US
 """
     
     return {
@@ -435,19 +443,18 @@ def upload_media(release_info: dict):
         release_info["media"].append(media_info | response)
 
 
-def post_to_twitter(release_info: dict) -> dict:
+def post_to_twitter(release_info: dict) -> Tuple[dict, dict]:
     log("info", f"[TWT] Posting to Twitter")
 
     upload_media(release_info)
     content = make_twitter_post(release_info)
 
-    do_twitter_request(
+    return content, do_twitter_request(
         POST_TWEET_URL,
         {"Content-Type": "application/json"},
         caller_name = "TWT",
         data = json.dumps(content)
     )
-    return content
 
 
 def handle_releases(releases: List[dict]) -> None:
@@ -484,12 +491,21 @@ def handle_releases(releases: List[dict]) -> None:
         if config["mongo"]["enabled"]:
             add_to_mongo(release_info)
         
+        post, response = post_to_twitter(release_info)
+
+        log(
+            "info",
+            f"[REL] {post['text']}\n\n{NEWLINE.join(media['url'] for media in release_info['media'])}",
+            publish=True,
+            ntfy_actions=[
+                create_ntfy_action("View on Twitter", f"{TWITTER_BASE_URL}/{config['twitter']['username']}/{response['data']['id']}"),
+                create_ntfy_action("View on Tinfoil", f"https://tinfoil.io/Title/{release_info['masked_tid']}"),
+                create_ntfy_action("View on eShop", f"https://ec.nintendo.com/apps/{release_info['masked_tid']}/US")
+                ]
+        )
+
         if config["common"]["debug"]:
             return
-        
-        post = post_to_twitter(release_info)
-
-        log("info", f"[REL] {post['text']}\n\n{NEWLINE.join(media['url'] for media in release_info['media'])}", publish=True)
 
         time.sleep(ONE_MINUTE)
 
@@ -501,10 +517,11 @@ def main_loop():
         releases = scan_srrdb()
         releases = find_new_releases(releases)
         handle_releases(releases)
-        time.sleep(ONE_MINUTE)
 
         if config["common"]["debug"]:
             return
+
+        time.sleep(ONE_MINUTE)
 
 
 if __name__ == "__main__":
