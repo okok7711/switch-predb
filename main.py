@@ -38,7 +38,7 @@ OLD_HASH_SET = set()
 DEBUG = config["common"]["debug"]
 NEWLINE = "\n"
 TITLE_ID_BASE_MASK = 0xFFFFFFFFFFFFE000
-TITLE_ID_REGEX = re.compile(r"01[A-Fa-f0-9]{12,}")
+TITLE_ID_REGEX = re.compile(r"01[A-Fa-f0-9X]{12,}")
 ONE_MINUTE = 60
 ONE_HOUR = 60 * ONE_MINUTE
 CACHE = {
@@ -209,7 +209,7 @@ def parse_nfo(nfo_url: str) -> Tuple[str, str]:
         log("error", f"[NFO] Could not parse Title ID from {nfo_url}")
         return
 
-    title_id = title_id.group()
+    title_id = title_id.group().replace("X", "0")
     masked_title_id = mask_title_id(title_id)
 
     if title_id not in CACHE["nfos"]:
