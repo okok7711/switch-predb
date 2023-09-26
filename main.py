@@ -528,7 +528,7 @@ def handle_releases(releases: List[dict]) -> None:
             f"[REL] {post['text']}\n\n{NEWLINE.join(media['url'] for media in release_info['media'])}",
             publish=True,
             ntfy_actions=[
-                create_ntfy_action("View on Twitter", f"{TWITTER_BASE_URL}/{config['twitter']['username']}/{response['data']['id']}"),
+                create_ntfy_action("View on Twitter", f"{TWITTER_BASE_URL}/{config['twitter']['username']}/status/{response['data']['id']}"),
                 create_ntfy_action("View on Tinfoil", f"https://tinfoil.io/Title/{release_info['masked_tid']}"),
                 create_ntfy_action("View on eShop", f"https://ec.nintendo.com/apps/{release_info['masked_tid']}/US")
                 ]
