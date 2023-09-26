@@ -7,7 +7,7 @@ font_size   = 14
 font_width  = 8
 background  = "black"
 foreground  = "white"
-renderer    = "pyansi"
+renderer    = "infekt"
 
 [twitter]
 consumer_key        = ""

@@ -26,6 +26,11 @@ if config["render"]["renderer"] == "pyansi":
 
     from pyansilove.pyansilove import AnsiLove, Path
     from pyansilove.schemas import AnsiLoveOptions
+    
+elif config["render"]["renderer"] == "infekt":
+    from tempfile import NamedTemporaryFile
+
+    import subprocess
 
 
 OLD_HASH_SET = set()
@@ -327,6 +332,27 @@ def render_nfo_pyansi(release_info: dict) -> Image.Image:
     return rendered_nfo
 
 
+def render_nfo_infekt(release_info: dict) -> Image.Image:
+    log("info", f"[NFO] Rendering {release_info['title']} NFO with infekt")
+
+    with (
+        NamedTemporaryFile(mode="w", suffix=".nfo") as nfo_file,
+        NamedTemporaryFile(mode="r", suffix=".png") as image_file
+    ):
+        nfo_file.write(CACHE["nfos"][release_info["tid"]])
+        nfo_file.flush()
+
+        subprocess.run([
+            "infekt-cli", nfo_file.name, "-O", image_file.name,
+            "-T", "ffffff", "-B", "000000", "-c"
+        ])
+
+        rendered_nfo = Image.open(image_file.name)
+        rendered_nfo.load()
+    
+    return rendered_nfo
+
+
 def upload_nfo(release_info: dict, buffer: BytesIO, mode: str) -> str:
     log("info", f"[RNR] Uploading rendered NFO {release_info['title']}")
 
@@ -479,6 +505,10 @@ def handle_releases(releases: List[dict]) -> None:
             elif config["render"]["renderer"] == "builtin":
                 mode = "jpeg"
                 render_nfo(release_info).save(buffer, format=mode)
+            
+            elif config["render"]["renderer"] == "infekt":
+                mode = "png"
+                render_nfo_infekt(release_info).save(buffer, format=mode)
 
             else:
                 raise ValueError(f"Unknown renderer {config['render']['renderer']}")
