@@ -164,20 +164,21 @@ def scan_srrdb() -> dict:
 
 
 def find_new_releases(releases: List[dict]) -> Generator[dict, None, None]:
-    initial = not OLD_HASH_SET and not DEBUG
     
     for release in releases:
         release_hash = md5(release["release"].encode()).hexdigest()
 
-        if initial:
-            OLD_HASH_SET.add(release_hash)
-            continue
-
         if release_hash in OLD_HASH_SET:
             continue
-        
+
         OLD_HASH_SET.add(release_hash)
 
+        if (
+            config["mongo"]["enabled"] and
+            mongo_client.releases.find_one({"title": release["release"]})
+        ):
+            continue
+        
         yield release
 
 
