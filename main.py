@@ -496,6 +496,16 @@ def handle_releases(releases: List[dict]) -> None:
         release_info = get_info(release_name)
 
         if not release_info:
+            log("warning", f"[REL] Release {release_name} has no NFO", publish=True)
+            
+            OLD_HASH_SET.add(
+                md5(release_name.encode()).hexdigest()
+            )
+
+            add_to_mongo({
+                "title": release_name,
+            })
+
             continue
 
         with BytesIO() as buffer:
