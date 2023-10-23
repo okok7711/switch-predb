@@ -6,7 +6,8 @@ from datetime import datetime
 from hashlib import md5
 from io import BytesIO
 from logging import getLogger
-from typing import Any, Generator, List, Tuple
+from time import sleep
+from typing import Any, Callable, Generator, Iterable, List, Optional, Tuple, TypeVar
 
 import coloredlogs
 import pymongo
@@ -16,6 +17,8 @@ from oauthlib import oauth1
 from PIL import Image, ImageDraw, ImageFont
 
 coloredlogs.install()
+
+T = TypeVar('T')
 
 logger = getLogger("switch-predb")
 config = toml.load("config.toml")
@@ -28,9 +31,8 @@ if config["render"]["renderer"] == "pyansi":
     from pyansilove.schemas import AnsiLoveOptions
     
 elif config["render"]["renderer"] == "infekt":
-    from tempfile import NamedTemporaryFile
-
     import subprocess
+    from tempfile import NamedTemporaryFile
 
 
 OLD_HASH_SET = set()
@@ -55,6 +57,7 @@ COLORS = {
 SRRDB_SCAN_URL = "https://api.srrdb.com/v1/search/category:nsw/order:date-desc"
 SRRDB_RELEASE_URL = "https://api.srrdb.com/v1/details/{release_name}"
 SRRDB_FILE_URL = "https://www.srrdb.com/download/file/{release_name}/{file_name}"
+SRRDB_ADD_URL = "https://www.srrdb.com/download/temp/{release_name}/{add_id}/{file_name}"
 TINFOIL_URL = "https://tinfoil.media/ti/{title_id}/1024/1024/"
 
 TWITTER_BASE_URL = "https://twitter.com"
@@ -71,24 +74,54 @@ def format_exception(exception: Exception) -> str:
     return ''.join(traceback.format_exception(None, exception, exception.__traceback__))
 
 
-def make_logging_message(level: str, message: str) -> dict:
-    return {
+def make_logging_message(level: str, message: str, extras: dict = {}) -> dict:
+    out = {
         "content": None,
         "embeds":
-            [{
-                "title": "New Logging Message",
-                "description": message,
-                "color": COLORS.get(level),
-                "timestamp": datetime.fromtimestamp(time.time() - (2 * ONE_HOUR)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            }],
+            [],
         "attachments": []
     }
 
+    out["embeds"].append({
+        "title": "New Logging Message",
+        "description": message,
+        "color": COLORS.get(level),
+        "timestamp": datetime.fromtimestamp(time.time() - (2 * ONE_HOUR)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    })
 
-def log_discord(level: str, message: str):
+    if not extras:
+        return out
+
+    for key in ("url", "image", "thumbnail"):
+        out["embeds"][0][key] = extras.get(key)
+    
+    if extras["proof"]["url"]:
+        out["embeds"].append({
+            "url": extras.get("url"),
+            "image": extras.get("proof")
+        })
+
+    return out
+
+
+def prepare_discord_extras(release_info: dict, twitter_post: str) -> dict:
+    return {
+        "url": twitter_post,
+        "image": {
+            "url": release_info["nfo"]
+        },
+        "thumbnail": {
+            "url": release_info["thumb"]
+        },
+        "proof": {
+            "url": release_info["proof"]
+        }
+    }
+
+def log_discord(level: str, message: str, extras: dict = {}):
     requests.post(
         config["discord"]["webhook"],
-        json = make_logging_message(level, message),
+        json = make_logging_message(level, message, extras),
         timeout=10
     )
 
@@ -118,14 +151,22 @@ def log_ntfy(message: str, public: bool = False, actions: list = []):
     )
 
 
-def log(level: str, message: str, *, silent: bool = False, publish: bool = False, ntfy_actions: list = []):
+def log(
+        level: str,
+        message: str,
+        *,
+        silent: bool = False,
+        publish: bool = False,
+        ntfy_actions: list = [],
+        extras: dict = {}
+    ):
     getattr(logger, level)(message)
 
     if silent:
         return
     
     if config["discord"]["enabled"]:
-        log_discord(level, message)
+        log_discord(level, message, extras)
 
     if config["ntfy"]["enabled"]:
         log_ntfy(message, actions=ntfy_actions)
@@ -141,6 +182,7 @@ def request_url(
         default: Any = None,
         apply: str = None,
         apply_kwargs: dict = {},
+        return_status_code: bool = False,
         **kwargs
     ):
     if DEBUG:
@@ -150,11 +192,11 @@ def request_url(
 
     except requests.RequestException as exception:
         log("error", f"[REQ][{caller_name}] Reaching {url} failed: ```{format_exception(exception)}```")
-        return default
+        return default if not return_status_code else exception.response.status_code
     
     if response.status_code not in range(200, 299):
         log("error", f"[REQ][{caller_name}] Non-200 response: {response.status_code} - `{response.text}`")
-        return default
+        return default if not return_status_code else response.status_code
     
     return getattr(response, apply)(**apply_kwargs) if apply else response
 
@@ -197,12 +239,22 @@ def mask_title_id(title_id: str) -> str:
     )[2:].upper()
 
 
+def find_first_true(iterable: Iterable[T], func: Callable[[T], bool], default: Optional[T] = None) -> T:
+    for item in iterable:
+        if func(item):
+            return item
+        
+    return default    
+
+
 def parse_nfo(nfo_url: str) -> Tuple[str, str]:
     log("info", f"[NFO] Parsing {nfo_url}")
-    nfo = request_url(nfo_url, "NFO").content.decode("cp437")
+    nfo = request_url(nfo_url, "NFO", return_status_code=True)
     
-    if not nfo:
-        return
+    if isinstance(nfo, int) or not nfo:
+        return nfo
+
+    nfo = nfo.content.decode("cp437")
 
     title_id = TITLE_ID_REGEX.search(nfo)
 
@@ -241,15 +293,30 @@ def get_info(release_name: str) -> dict:
     proof_url = None
     files = details["files"]
 
-    if "Proof" in files[1]["name"]:
-        proof_url = SRRDB_FILE_URL.format(release_name=release_name, file_name=files[1]["name"])
+    maybe_proof = find_first_true(files, lambda file: "Proof/" in file["name"] and file["name"].endswith(".jpg"))
 
-    nfo_url = SRRDB_FILE_URL.format(release_name=release_name, file_name=files[0]["name"])
+    if maybe_proof:
+        proof_url = SRRDB_FILE_URL.format(release_name=release_name, file_name=maybe_proof["name"])
+
+    nfo_file = find_first_true(files, lambda file: file["name"].endswith(".nfo"))
+
+    if not nfo_file and not details["adds"]:
+        return
+    
+    if nfo_file:
+        nfo_url = SRRDB_FILE_URL.format(release_name=release_name, file_name=nfo_file["name"])
+
+    if details["adds"]:
+        nfo_file = find_first_true(details["adds"], lambda file: file["name"].endswith(".nfo"))
+        nfo_url = SRRDB_ADD_URL.format(release_name=release_name, add_id=nfo_file["id"], file_name=nfo_file["name"])
+
+    if not nfo_file:
+        return
 
     parse_result = parse_nfo(nfo_url)
 
-    if not parse_result:
-        return
+    if isinstance(parse_result, int):
+        return parse_result
     
     title_id, masked_title_id = parse_result
 
@@ -343,10 +410,15 @@ def render_nfo_infekt(release_info: dict) -> Image.Image:
         nfo_file.write(CACHE["nfos"][release_info["tid"]])
         nfo_file.flush()
 
-        subprocess.run([
+        result = subprocess.run([
             "infekt-cli", nfo_file.name, "-O", image_file.name,
             "-T", "ffffff", "-B", "000000", "-c"
-        ])
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if result.returncode != 0 or result.stderr:
+            log("warning", f"[NFO] Could not render {release_info['title']} NFO with infekt")
+
+            return render_nfo(release_info)
 
         rendered_nfo = Image.open(image_file.name)
         rendered_nfo.load()
@@ -495,7 +567,7 @@ def handle_releases(releases: List[dict]) -> None:
         
         release_info = get_info(release_name)
 
-        if not release_info:
+        if not release_info or isinstance(release_info, int) and release_info == 404:
             log("warning", f"[REL] Release {release_name} has no NFO", publish=True)
             
             OLD_HASH_SET.add(
@@ -506,6 +578,11 @@ def handle_releases(releases: List[dict]) -> None:
                 "title": release_name,
             })
 
+            continue
+
+        elif isinstance(release_info, int) and release_info == 429:
+            log("warning", f"[REL] Ratelimit reached")
+            sleep(ONE_HOUR)
             continue
 
         with BytesIO() as buffer:
@@ -529,10 +606,15 @@ def handle_releases(releases: List[dict]) -> None:
             if not upload_nfo(release_info, buffer, mode):
                 continue
         
+        post, response = post_to_twitter(release_info)
+
+        if not response:
+            continue
+        
         if config["mongo"]["enabled"]:
             add_to_mongo(release_info)
-        
-        post, response = post_to_twitter(release_info)
+
+        TWITTER_POST_URL = f"{TWITTER_BASE_URL}/{config['twitter']['username']}/status/{response['data']['id']}"
 
         log(
             "info",
@@ -542,7 +624,8 @@ def handle_releases(releases: List[dict]) -> None:
                 create_ntfy_action("View on Twitter", f"{TWITTER_BASE_URL}/{config['twitter']['username']}/status/{response['data']['id']}"),
                 create_ntfy_action("View on Tinfoil", f"https://tinfoil.io/Title/{release_info['masked_tid']}"),
                 create_ntfy_action("View on eShop", f"https://ec.nintendo.com/apps/{release_info['masked_tid']}/US")
-                ]
+            ],
+            extras=prepare_discord_extras(release_info, TWITTER_POST_URL)
         )
 
         if config["common"]["debug"]:
